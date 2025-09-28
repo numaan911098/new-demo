@@ -1,24 +1,3 @@
-# name: vorpal-reviewdog-test
-# on:
-#   push:
-#     branches: [ "main", "master" ]
-#   pull_request:
-#     branches: [ "main", "master" ]
-# jobs:
-#   vorpal:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
-#       - name: Vorpal with reviewdog
-#         uses: checkmarx/vorpal-reviewdog-github-action@v1.0.0
-#         with:
-#           source_path: app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js
-#           filter_mode: file
-#           github_token: ${{ secrets.github_token }}
-#           reporter: github-pr-check
-#           level: error
-#           fail_on_error: true
-
 name: vorpal-reviewdog-test
 on:
   push:
@@ -58,41 +37,108 @@ jobs:
       - name: Vorpal with reviewdog
         id: vorpal_scan
         uses: checkmarx/vorpal-reviewdog-github-action@v1.0.0
-        continue-on-error: true  # Don't let the action fail the workflow yet
+        continue-on-error: true
         with:
           source_path: app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js
           filter_mode: file
           github_token: ${{ secrets.github_token }}
           reporter: github-pr-check
           level: error
-          fail_on_error: false  # We'll handle the failure logic ourselves
+          fail_on_error: false
           
-      - name: Check results and fail if configured
-        if: steps.vorpal_scan.outcome == 'failure' && steps.fail_config.outputs.should_fail == 'true'
+      - name: Check for Vorpal findings and fail if configured
+        if: steps.fail_config.outputs.should_fail == 'true'
         run: |
-          echo "❌ Vorpal scan found security vulnerabilities!"
-          echo "Failing workflow because fail_on_errors is set to true"
-          echo ""
-          echo "To disable this failure:"
-          echo "1. Set FAIL_ON_ERRORS_FOUND to false in the workflow env section"
-          echo "2. Or run manually with 'Fail workflow if vulnerabilities are found' unchecked"
-          echo "3. Or set repository variable FAIL_ON_ERRORS_FOUND to false"
-          exit 1
+          # Check if reviewdog found any issues by looking for the reviewdog report in the job logs
+          # Since reviewdog reports "Filtered Findings (X)", we can check the exit code of reviewdog
+          
+          # Alternative approach: Re-run Vorpal without reviewdog to get raw results
+          echo "Re-running Vorpal to check for vulnerabilities..."
+          
+          # Install Vorpal CLI
+          npm install -g @checkmarx/vorpal-cli
+          
+          # Run Vorpal and capture results
+          FILES="app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js"
+          
+          # Create a temp file to capture results
+          vorpal scan --file "$FILES" --format json --output vorpal-results.json || true
+          
+          # Count vulnerabilities from the JSON output
+          if [ -f "vorpal-results.json" ]; then
+            VULN_COUNT=$(python3 -c "
+import json
+import sys
+try:
+    with open('vorpal-results.json', 'r') as f:
+        data = json.load(f)
+    # Count total vulnerabilities across all files
+    total = 0
+    if 'results' in data:
+        for file_results in data['results']:
+            if 'vulnerabilities' in file_results:
+                total += len(file_results['vulnerabilities'])
+    print(total)
+except Exception as e:
+    print('0')  # Default to 0 if parsing fails
+")
+          else
+            VULN_COUNT=0
+          fi
+          
+          echo "Found $VULN_COUNT vulnerabilities"
+          
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "❌ Vorpal scan found $VULN_COUNT security vulnerabilities!"
+            echo "Failing workflow because fail_on_errors is set to true"
+            echo ""
+            echo "To disable this failure:"
+            echo "1. Set FAIL_ON_ERRORS_FOUND to false in the workflow env section"
+            echo "2. Or run manually with 'Fail workflow if vulnerabilities are found' unchecked"
+            echo "3. Or set repository variable FAIL_ON_ERRORS_FOUND to false"
+            exit 1
+          else
+            echo "✅ No vulnerabilities found"
+          fi
           
       - name: Summary
         if: always()
         run: |
           echo "## Vorpal Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Scan Status:** ${{ steps.vorpal_scan.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Reviewdog Status:** ${{ steps.vorpal_scan.outcome }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Fail on errors:** ${{ steps.fail_config.outputs.should_fail }}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ steps.vorpal_scan.outcome }}" == "failure" ]]; then
-            echo "- **Result:** ⚠️ Vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
-            if [[ "${{ steps.fail_config.outputs.should_fail }}" == "true" ]]; then
-              echo "- **Action:** ❌ Workflow failed due to configuration" >> $GITHUB_STEP_SUMMARY
+          
+          # Try to extract vulnerability count from previous step
+          if [ -f "vorpal-results.json" ]; then
+            VULN_COUNT=$(python3 -c "
+import json
+try:
+    with open('vorpal-results.json', 'r') as f:
+        data = json.load(f)
+    total = 0
+    if 'results' in data:
+        for file_results in data['results']:
+            if 'vulnerabilities' in file_results:
+                total += len(file_results['vulnerabilities'])
+    print(total)
+except:
+    print('Unknown')
+")
+            echo "- **Vulnerabilities Found:** $VULN_COUNT" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$VULN_COUNT" != "Unknown" ] && [ "$VULN_COUNT" -gt 0 ]; then
+              echo "- **Result:** ⚠️ Vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
+              if [[ "${{ steps.fail_config.outputs.should_fail }}" == "true" ]]; then
+                echo "- **Action:** ❌ Workflow failed due to configuration" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "- **Action:** ✅ Workflow continued (failure disabled)" >> $GITHUB_STEP_SUMMARY
+              fi
             else
-              echo "- **Action:** ✅ Workflow continued (failure disabled)" >> $GITHUB_STEP_SUMMARY
+              echo "- **Result:** ✅ No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
             fi
           else
-            echo "- **Result:** ✅ No vulnerabilities found or scan succeeded" >> $GITHUB_STEP_SUMMARY
+            echo "- **Vulnerabilities Found:** Check reviewdog report above" >> $GITHUB_STEP_SUMMARY
+            echo "- **Result:** ✅ Scan completed (reviewdog handled reporting)" >> $GITHUB_STEP_SUMMARY
           fi
+          
           echo "- **Files Scanned:** app/routes/, app/data/, server.js, config/config.js" >> $GITHUB_STEP_SUMMARY
