@@ -1,0 +1,30 @@
+name: vorpal-reviewdog-full
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  vorpal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get all repo files
+        id: all-files
+        run: |
+          FILES=$(find . -type f \
+            \( -name "*.js" -o -name "*.ts" -o -name "*.java" -o -name "*.cs" -o -name "*.py" -o -name "*.go" \) \
+            | tr '\n' ',' | sed 's/,$//')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+      - name: Vorpal with reviewdog (scan all files)
+        uses: checkmarx/vorpal-reviewdog-github-action@v1.0.0
+        with:
+          source_path: "${{ steps.all-files.outputs.files }}"
+          filter_mode: file
+          github_token: ${{ secrets.github_token }}
+          reporter: github-pr-check
+          level: error
+          fail_on_error: false
