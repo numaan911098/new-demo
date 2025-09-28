@@ -49,39 +49,34 @@ jobs:
       - name: Check for Vorpal findings and fail if configured
         if: steps.fail_config.outputs.should_fail == 'true'
         run: |
-          # Check if reviewdog found any issues by looking for the reviewdog report in the job logs
-          # Since reviewdog reports "Filtered Findings (X)", we can check the exit code of reviewdog
-          
-          # Alternative approach: Re-run Vorpal without reviewdog to get raw results
           echo "Re-running Vorpal to check for vulnerabilities..."
           
           # Install Vorpal CLI
           npm install -g @checkmarx/vorpal-cli
           
-          # Run Vorpal and capture results
+          # Define files to scan
           FILES="app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js"
           
-          # Create a temp file to capture results
+          # Run Vorpal and capture results
           vorpal scan --file "$FILES" --format json --output vorpal-results.json || true
           
           # Count vulnerabilities from the JSON output
           if [ -f "vorpal-results.json" ]; then
             VULN_COUNT=$(python3 -c "
-import json
-import sys
-try:
-    with open('vorpal-results.json', 'r') as f:
-        data = json.load(f)
-    # Count total vulnerabilities across all files
-    total = 0
-    if 'results' in data:
-        for file_results in data['results']:
-            if 'vulnerabilities' in file_results:
-                total += len(file_results['vulnerabilities'])
-    print(total)
-except Exception as e:
-    print('0')  # Default to 0 if parsing fails
-")
+          import json
+          import sys
+          try:
+              with open('vorpal-results.json', 'r') as f:
+                  data = json.load(f)
+              total = 0
+              if 'results' in data:
+                  for file_results in data['results']:
+                      if 'vulnerabilities' in file_results:
+                          total += len(file_results['vulnerabilities'])
+              print(total)
+          except Exception as e:
+              print('0')
+          ")
           else
             VULN_COUNT=0
           fi
@@ -111,19 +106,19 @@ except Exception as e:
           # Try to extract vulnerability count from previous step
           if [ -f "vorpal-results.json" ]; then
             VULN_COUNT=$(python3 -c "
-import json
-try:
-    with open('vorpal-results.json', 'r') as f:
-        data = json.load(f)
-    total = 0
-    if 'results' in data:
-        for file_results in data['results']:
-            if 'vulnerabilities' in file_results:
-                total += len(file_results['vulnerabilities'])
-    print(total)
-except:
-    print('Unknown')
-")
+          import json
+          try:
+              with open('vorpal-results.json', 'r') as f:
+                  data = json.load(f)
+              total = 0
+              if 'results' in data:
+                  for file_results in data['results']:
+                      if 'vulnerabilities' in file_results:
+                          total += len(file_results['vulnerabilities'])
+              print(total)
+          except:
+              print('Unknown')
+          ")
             echo "- **Vulnerabilities Found:** $VULN_COUNT" >> $GITHUB_STEP_SUMMARY
             
             if [ "$VULN_COUNT" != "Unknown" ] && [ "$VULN_COUNT" -gt 0 ]; then
