@@ -1,4 +1,4 @@
-name: 2ms Secret Scan (Fixed)
+name: 2ms Secret Scan
 on:
   push:
     branches: [ "main", "master" ]
