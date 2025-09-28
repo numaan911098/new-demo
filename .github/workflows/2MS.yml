@@ -4,6 +4,18 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      fail_on_secrets:
+        description: 'Fail workflow if secrets are found'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  # Global setting - change this to control default behavior
+  FAIL_ON_SECRETS_FOUND: true
+
 jobs:
   run-2ms:
     runs-on: ubuntu-latest
@@ -15,7 +27,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        
+      - name: Set fail condition
+        id: fail_config
+        run: |
+          # Priority: manual trigger input > environment variable > default true
+          if [[ "${{ github.event.inputs.fail_on_secrets }}" != "" ]]; then
+            SHOULD_FAIL="${{ github.event.inputs.fail_on_secrets }}"
+          else
+            SHOULD_FAIL="${{ env.FAIL_ON_SECRETS_FOUND }}"
+          fi
+          echo "should_fail=$SHOULD_FAIL" >> $GITHUB_OUTPUT
+          echo "Will fail on secrets found: $SHOULD_FAIL"
+          
       - name: Run 2ms secret scan
+        id: scan
         run: |
           mkdir -p reports
           # Generate JSON output (this works reliably)
@@ -51,8 +77,10 @@ jobs:
           }
           
           # Convert findings to SARIF format
+          findings_count = 0
           for file_results in data.get('results', {}).values():
               for finding in file_results:
+                  findings_count += 1
                   # Fix line numbers - SARIF requires line numbers >= 1
                   start_line = max(finding.get('startLine', 1), 1)
                   start_column = max(finding.get('startColumn', 1), 1)
@@ -77,19 +105,60 @@ jobs:
           with open('reports/2ms-results.sarif', 'w') as f:
               json.dump(sarif, f, indent=2)
           
-          print(f'Created SARIF with {len(sarif[\"runs\"][0][\"results\"])} findings')
+          print(f'Created SARIF with {findings_count} findings')
           print('Line number corrections applied for SARIF compliance')
+          
+          # Export findings count for next step
+          with open('reports/findings_count.txt', 'w') as f:
+              f.write(str(findings_count))
           "
+          
+          # Read findings count and set as output
+          FINDINGS_COUNT=$(cat reports/findings_count.txt)
+          echo "findings_count=$FINDINGS_COUNT" >> $GITHUB_OUTPUT
           
           echo "Generated reports:"
           ls -la reports/
+          echo "Total findings: $FINDINGS_COUNT"
+          
       - name: Upload SARIF to Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: reports/2ms-results.sarif
+          
       - name: Upload JSON report as artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: 2ms-scan-results
           path: reports/
+          
+      - name: Check results and fail if configured
+        if: steps.scan.outputs.findings_count > 0 && steps.fail_config.outputs.should_fail == 'true'
+        run: |
+          echo "❌ Secret scan found ${{ steps.scan.outputs.findings_count }} potential secrets!"
+          echo "Failing workflow because fail_on_secrets is set to true"
+          echo ""
+          echo "To disable this failure:"
+          echo "1. Set FAIL_ON_SECRETS_FOUND to false in the workflow env section"
+          echo "2. Or run manually with 'Fail workflow if secrets are found' unchecked"
+          echo "3. Or set repository variable FAIL_ON_SECRETS_FOUND to false"
+          exit 1
+          
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 2ms Secret Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Findings:** ${{ steps.scan.outputs.findings_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fail on secrets:** ${{ steps.fail_config.outputs.should_fail }}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.scan.outputs.findings_count }}" -gt 0 ]]; then
+            echo "- **Status:** ⚠️ Secrets detected" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ steps.fail_config.outputs.should_fail }}" == "true" ]]; then
+              echo "- **Action:** ❌ Workflow failed due to configuration" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **Action:** ✅ Workflow continued (failure disabled)" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- **Status:** ✅ No secrets found" >> $GITHUB_STEP_SUMMARY
+          fi
