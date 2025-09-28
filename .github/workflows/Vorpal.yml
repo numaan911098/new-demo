@@ -1,4 +1,4 @@
-name: vorpal-reviewdog
+name: vorpal-reviewdog-test
 on:
   push:
     branches: [ "main", "master" ]
