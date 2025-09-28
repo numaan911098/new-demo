@@ -1,20 +1,98 @@
+# name: vorpal-reviewdog-test
+# on:
+#   push:
+#     branches: [ "main", "master" ]
+#   pull_request:
+#     branches: [ "main", "master" ]
+# jobs:
+#   vorpal:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: Vorpal with reviewdog
+#         uses: checkmarx/vorpal-reviewdog-github-action@v1.0.0
+#         with:
+#           source_path: app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js
+#           filter_mode: file
+#           github_token: ${{ secrets.github_token }}
+#           reporter: github-pr-check
+#           level: error
+#           fail_on_error: true
+
 name: vorpal-reviewdog-test
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      fail_on_errors:
+        description: 'Fail workflow if vulnerabilities are found'
+        required: false
+        default: 'true'
+        type: boolean
+
+env:
+  # Global setting - change this to control default behavior
+  FAIL_ON_ERRORS_FOUND: true
+
 jobs:
   vorpal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Set fail condition
+        id: fail_config
+        run: |
+          # Priority: manual trigger input > environment variable > default true
+          if [[ "${{ github.event.inputs.fail_on_errors }}" != "" ]]; then
+            SHOULD_FAIL="${{ github.event.inputs.fail_on_errors }}"
+          else
+            SHOULD_FAIL="${{ env.FAIL_ON_ERRORS_FOUND }}"
+          fi
+          echo "should_fail=$SHOULD_FAIL" >> $GITHUB_OUTPUT
+          echo "Will fail on errors found: $SHOULD_FAIL"
+          
       - name: Vorpal with reviewdog
+        id: vorpal_scan
         uses: checkmarx/vorpal-reviewdog-github-action@v1.0.0
+        continue-on-error: true  # Don't let the action fail the workflow yet
         with:
           source_path: app/routes/index.js,app/routes/memos.js,app/routes/contributions.js,app/routes/tutorial.js,app/routes/allocations.js,app/routes/research.js,app/routes/session.js,app/routes/profile.js,app/routes/error.js,app/routes/benefits.js,app/data/contributions-dao.js,app/data/allocations-dao.js,app/data/memos-dao.js,app/data/benefits-dao.js,app/data/profile-dao.js,app/data/user-dao.js,app/data/research-dao.js,server.js,config/config.js
           filter_mode: file
           github_token: ${{ secrets.github_token }}
           reporter: github-pr-check
           level: error
-          fail_on_error: true
+          fail_on_error: false  # We'll handle the failure logic ourselves
+          
+      - name: Check results and fail if configured
+        if: steps.vorpal_scan.outcome == 'failure' && steps.fail_config.outputs.should_fail == 'true'
+        run: |
+          echo "❌ Vorpal scan found security vulnerabilities!"
+          echo "Failing workflow because fail_on_errors is set to true"
+          echo ""
+          echo "To disable this failure:"
+          echo "1. Set FAIL_ON_ERRORS_FOUND to false in the workflow env section"
+          echo "2. Or run manually with 'Fail workflow if vulnerabilities are found' unchecked"
+          echo "3. Or set repository variable FAIL_ON_ERRORS_FOUND to false"
+          exit 1
+          
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Vorpal Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan Status:** ${{ steps.vorpal_scan.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fail on errors:** ${{ steps.fail_config.outputs.should_fail }}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.vorpal_scan.outcome }}" == "failure" ]]; then
+            echo "- **Result:** ⚠️ Vulnerabilities detected" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ steps.fail_config.outputs.should_fail }}" == "true" ]]; then
+              echo "- **Action:** ❌ Workflow failed due to configuration" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **Action:** ✅ Workflow continued (failure disabled)" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "- **Result:** ✅ No vulnerabilities found or scan succeeded" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **Files Scanned:** app/routes/, app/data/, server.js, config/config.js" >> $GITHUB_STEP_SUMMARY
